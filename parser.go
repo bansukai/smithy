@@ -34,21 +34,30 @@ func Parse(path string, opts ...ParserOption) (*AST, error) {
 		return nil, err
 	}
 	src := string(b)
+
+	return parse(path, src, opts...)
+}
+
+func ParseString(s string, opts ...ParserOption) (*AST, error) {
+	return parse(":memory:", s, opts...)
+}
+
+func parse(path string, content string, opts ...ParserOption) (*AST, error) {
 	p := &Parser{
-		scanner:  NewScanner(strings.NewReader(src)),
+		scanner:  NewScanner(strings.NewReader(content)),
 		path:     path,
-		source:   src,
+		source:   content,
 		visitors: map[string]TraitVisitor{},
 	}
 
 	p.addVisitors(DefaultTraitVisitors()...)
+
 	for _, opt := range opts {
 		opt(p)
 	}
 
 	p.wd, _ = os.Getwd()
-	err = p.Parse()
-	if err != nil {
+	if err := p.Parse(); err != nil {
 		return nil, err
 	}
 	return p.ast, nil
