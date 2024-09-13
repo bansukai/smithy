@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bansukai/smithy"
 	"github.com/boynton/data"
-	"github.com/boynton/smithy"
 )
 
 func main() {
@@ -41,7 +41,7 @@ func main() {
 
 	flag.Parse()
 	if *pVersion {
-		fmt.Printf("Smithy tool %s [%s]\n", smithy.ToolVersion, "https://github.com/boynton/smithy")
+		fmt.Printf("Smithy tool %s [%s]\n", smithy.ToolVersion, "https://github.com/bansukai/smithy")
 		os.Exit(0)
 	}
 	smithy.AnnotateSources = *pSources

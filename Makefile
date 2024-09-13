@@ -2,23 +2,23 @@ all:: bin/smithy
 
 bin/smithy: *.go cmd/smithy/*.go
 	mkdir -p bin
-	go build -ldflags "-X github.com/boynton/smithy.ToolVersion=`git describe --tag`" -o bin/smithy github.com/boynton/smithy/cmd/smithy
+	go build -ldflags "-X github.com/bansukai/smithy.ToolVersion=`git describe --tag`" -o bin/smithy github.com/bansukai/smithy/cmd/smithy
 
 install:: all
 	rm -f $(HOME)/bin/smithy
 	cp -p bin/smithy $(HOME)/bin/smithy
 
 test::
-#	go test github.com/boynton/smithy/test
+#	go test github.com/bansukai/smithy/test
 
 proper::
-	go fmt github.com/boynton/smithy
-	go vet github.com/boynton/smithy
-	go fmt github.com/boynton/smithy/cmd/smithy
-	go vet github.com/boynton/smithy/cmd/smithy
+	go fmt github.com/bansukai/smithy
+	go vet github.com/bansukai/smithy
+	go fmt github.com/bansukai/smithy/cmd/smithy
+	go vet github.com/bansukai/smithy/cmd/smithy
 
 clean::
 	rm -rf bin
 
 go.mod:
-	go mod init github.com/boynton/smithy && go mod tidy
+	go mod init github.com/bansukai/smithy && go mod tidy
