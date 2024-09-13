@@ -17,7 +17,6 @@ package smithy
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -25,19 +24,28 @@ import (
 	"github.com/boynton/data"
 )
 
+const GenericAccept = "*"
+
 var AnnotateSources bool = false
 
-func Parse(path string) (*AST, error) {
-	b, err := ioutil.ReadFile(path)
+func Parse(path string, opts ...ParserOption) (*AST, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	src := string(b)
 	p := &Parser{
-		scanner: NewScanner(strings.NewReader(src)),
-		path:    path,
-		source:  src,
+		scanner:  NewScanner(strings.NewReader(src)),
+		path:     path,
+		source:   src,
+		visitors: map[string]TraitVisitor{},
 	}
+
+	p.addVisitors(DefaultTraitVisitors()...)
+	for _, opt := range opts {
+		opt(p)
+	}
+
 	p.wd, _ = os.Getwd()
 	err = p.Parse()
 	if err != nil {
@@ -45,6 +53,8 @@ func Parse(path string) (*AST, error) {
 	}
 	return p.ast, nil
 }
+
+type ParserOption func(*Parser)
 
 type Parser struct {
 	path           string
@@ -60,6 +70,47 @@ type Parser struct {
 	use            map[string]string //maps short name to fully qualified name (typically another namespace)
 	wd             string
 	version        int //1 or 2
+	visitors       map[string]TraitVisitor
+}
+
+type TraitVisitor interface {
+	Accepts() []string
+	Parse(p ASTParser, name string, traits *data.Object) (*data.Object, error)
+}
+
+type ASTParser interface {
+	EnsureNamespaced(name string) string
+	Expect(tokenType TokenType) error
+	ExpectIdentifier() (string, error)
+	ExpectNumber() (*data.Decimal, error)
+	ExpectInt() (int, error)
+	ExpectString() (string, error)
+	ExpectStringArray() ([]string, error)
+	ExpectIdentifierArray() ([]string, error)
+	ExpectIdentifierMap() (map[string]string, error)
+	GetToken() *Token
+	MergeComment(comment1 string, comment2 string) string
+	ParseTraitArgs() (*data.Object, interface{}, error)
+	WithTrait(traits *data.Object, key string, val interface{}) *data.Object
+	WithCommentTrait(traits *data.Object, namespace string, val string) (*data.Object, string)
+	Error(msg string) error
+	SyntaxError() error
+	Warning(msg string)
+	EndOfFileError() error
+}
+
+func WithTraitVisitors(visitors ...TraitVisitor) ParserOption {
+	return func(p *Parser) {
+		p.addVisitors(visitors...)
+	}
+}
+
+func (p *Parser) addVisitors(visitors ...TraitVisitor) {
+	for _, v := range visitors {
+		for _, ac := range v.Accepts() {
+			p.visitors[ac] = v
+		}
+	}
 }
 
 func (p *Parser) Parse() error {
@@ -88,45 +139,45 @@ func (p *Parser) Parse() error {
 				}
 				err = p.parseMetadata()
 			case "service":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseService(traits)
 			case "blob", "document":
 				err = p.Error(fmt.Sprintf("Shape NYI: %s", tok.Text))
 			case "byte", "short", "integer", "long", "float", "double", "bigInteger", "bigDecimal", "string", "timestamp", "boolean":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseSimpleTypeDef(tok.Text, traits)
 				traits = nil
 			case "enum", "intEnum":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseEnum(traits, tok.Text == "intEnum")
 				traits = nil
 			case "structure":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseStructure(traits)
 				traits = nil
 			case "union":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseUnion(traits)
 				traits = nil
 			case "set":
 				p.Warning("Deprecated shape: set")
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseList(traits)
 				traits = nil
 			case "list":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseList(traits)
 				traits = nil
 			case "map":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseMap(tok.Text, traits)
 				traits = nil
 			case "operation":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseOperation(traits)
 				traits = nil
 			case "resource":
-				traits, comment = withCommentTrait(traits, comment)
+				traits, comment = withCommentTrait(traits, "", comment)
 				err = p.parseResource(traits)
 				traits = nil
 			case "use":
@@ -602,7 +653,7 @@ func (p *Parser) addShapeDefinition(name string, shape *Shape) error {
 	}
 	if AnnotateSources {
 		rpath := p.relativePath(p.path)
-		shape.Traits, _ = withCommentTrait(shape.Traits, "source: "+rpath)
+		shape.Traits, _ = withCommentTrait(shape.Traits, "", "source: "+rpath)
 	}
 	p.ast.PutShape(id, shape)
 	return nil
@@ -893,7 +944,7 @@ func (p *Parser) parseStructureBody(traits *data.Object) (*Shape, error) {
 			}
 			err = p.ignore(COMMA)
 			if comment != "" {
-				mtraits, comment = withCommentTrait(mtraits, comment)
+				mtraits, comment = withCommentTrait(mtraits, "", comment)
 				comment = ""
 			}
 			mems.Put(fname, &Member{
@@ -1049,7 +1100,7 @@ func (p *Parser) parseEnum(traits *data.Object, intEnum bool) error {
 				p.UngetToken()
 			}
 			err = p.ignore(COMMA)
-			mtraits, comment = withCommentTrait(mtraits, comment)
+			mtraits, comment = withCommentTrait(mtraits, "", comment)
 			mems.Put(fname, &Member{
 				Target: "smithy.api#Unit",
 				Traits: mtraits,
@@ -1240,7 +1291,7 @@ func (p *Parser) parseResource(traits *data.Object) error {
 		Traits: traits,
 	}
 	var comment string
-	traits, comment = withCommentTrait(traits, comment)
+	traits, comment = withCommentTrait(traits, "", comment)
 	for {
 		tok := p.GetToken()
 		if tok == nil {
@@ -1413,132 +1464,17 @@ func (p *Parser) parseTraitArgs() (*data.Object, interface{}, error) {
 }
 
 func (p *Parser) parseTrait(traits *data.Object) (*data.Object, error) {
-	tname, err := p.expectShapeId()
+	traitName, err := p.expectShapeId()
 	if err != nil {
 		return traits, err
 	}
-	switch tname {
-	case "idempotent", "required", "httpLabel", "httpPayload", "readonly", "box", "sensitive", "input", "output", "httpResponseCode":
-		return withTrait(traits, "smithy.api#"+tname, data.NewObject()), nil
-	case "documentation":
-		err := p.expect(OPEN_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		s, err := p.ExpectString()
-		if err != nil {
-			return traits, err
-		}
-		err = p.expect(CLOSE_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		traits, _ = withCommentTrait(traits, s)
-		return traits, nil
-	case "httpQuery", "httpHeader", "error", "pattern", "title", "timestampFormat", "enumValue": //strings
-		err := p.expect(OPEN_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		s, err := p.ExpectString()
-		if err != nil {
-			return traits, err
-		}
-		err = p.expect(CLOSE_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#"+tname, s), nil
-	case "tags":
-		_, tags, err := p.parseTraitArgs()
-		return withTrait(traits, "smithy.api#tags", tags), err
-	case "httpError":
-		err := p.expect(OPEN_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		n, err := p.ExpectInt()
-		if err != nil {
-			return traits, err
-		}
-		err = p.expect(CLOSE_PAREN)
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#"+tname, n), nil
-	case "http":
-		args, _, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#http", args), nil
-	case "length":
-		args, _, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#length", args), nil
-	case "range":
-		args, _, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#range", args), nil
-	case "deprecated":
-		args, _, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#deprecated", args), nil
-
-	case "paginated":
-		args, _, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		return withTrait(traits, "smithy.api#paginated", args), nil
-	case "enum":
-		p.Warning("Deprecated trait: enum")
-		_, lit, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		if lit == nil {
+	tv, ok := p.visitors[traitName]
+	if !ok {
+		if tv, ok = p.visitors[GenericAccept]; !ok {
 			return traits, p.SyntaxError()
 		}
-		return withTrait(traits, "smithy.api#enum", lit), nil
-	case "examples":
-		_, lit, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		if lit == nil {
-			return traits, p.SyntaxError()
-		}
-		return withTrait(traits, "smithy.api#examples", lit), nil
-	case "trait":
-		args, lit, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		if lit != nil {
-			return withTrait(traits, "smithy.api#trait", lit), nil
-		}
-		if args.Length() == 0 {
-			return withTrait(traits, "smithy.api#trait", data.NewObject()), nil
-		}
-		return withTrait(traits, "smithy.api#trait", args), nil
-	default:
-		args, lit, err := p.parseTraitArgs()
-		if err != nil {
-			return traits, err
-		}
-		tid := p.ensureNamespaced(tname)
-		if lit != nil {
-			return withTrait(traits, tid, lit), nil
-		}
-		return withTrait(traits, tid, args), nil
 	}
+	return tv.Parse(wrappedParser{p: p}, traitName, traits)
 }
 
 func withTrait(traits *data.Object, key string, val interface{}) *data.Object {
@@ -1551,10 +1487,14 @@ func withTrait(traits *data.Object, key string, val interface{}) *data.Object {
 	return traits
 }
 
-func withCommentTrait(traits *data.Object, val string) (*data.Object, string) {
+func withCommentTrait(traits *data.Object, namespace string, val string) (*data.Object, string) {
+	if namespace == "" {
+		namespace = "smithy.api#documentation"
+	}
+
 	if val != "" {
 		val = TrimSpace(val)
-		traits = withTrait(traits, "smithy.api#documentation", val)
+		traits = withTrait(traits, namespace, val)
 	}
 	return traits, ""
 }
@@ -1694,3 +1634,53 @@ func (p *Parser) relativePath(path string) string {
 		return path[i:]
 	}
 }
+
+type wrappedParser struct {
+	p *Parser
+}
+
+func (w wrappedParser) EnsureNamespaced(name string) string { return w.p.ensureNamespaced(name) }
+
+func (w wrappedParser) Expect(tokenType TokenType) error { return w.p.expect(tokenType) }
+
+func (w wrappedParser) ExpectIdentifier() (string, error) { return w.p.ExpectIdentifier() }
+
+func (w wrappedParser) ExpectNumber() (*data.Decimal, error) { return w.p.ExpectNumber() }
+
+func (w wrappedParser) ExpectInt() (int, error) { return w.p.ExpectInt() }
+
+func (w wrappedParser) ExpectString() (string, error) { return w.p.ExpectString() }
+
+func (w wrappedParser) ExpectStringArray() ([]string, error) { return w.p.ExpectStringArray() }
+
+func (w wrappedParser) ExpectIdentifierArray() ([]string, error) { return w.p.ExpectIdentifierArray() }
+
+func (w wrappedParser) ExpectIdentifierMap() (map[string]string, error) {
+	return w.p.ExpectIdentifierMap()
+}
+
+func (w wrappedParser) GetToken() *Token { return w.p.GetToken() }
+
+func (w wrappedParser) MergeComment(comment1 string, comment2 string) string {
+	return w.p.MergeComment(comment1, comment2)
+}
+
+func (w wrappedParser) ParseTraitArgs() (*data.Object, interface{}, error) {
+	return w.p.parseTraitArgs()
+}
+
+func (w wrappedParser) WithTrait(traits *data.Object, key string, val interface{}) *data.Object {
+	return withTrait(traits, key, val)
+}
+
+func (w wrappedParser) WithCommentTrait(traits *data.Object, namespace string, val string) (*data.Object, string) {
+	return withCommentTrait(traits, namespace, val)
+}
+
+func (w wrappedParser) Error(msg string) error { return w.p.Error(msg) }
+
+func (w wrappedParser) SyntaxError() error { return w.p.SyntaxError() }
+
+func (w wrappedParser) Warning(msg string) { w.p.Warning(msg) }
+
+func (w wrappedParser) EndOfFileError() error { return w.p.EndOfFileError() }

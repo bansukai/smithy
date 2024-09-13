@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 
 	"github.com/boynton/data"
@@ -255,7 +255,7 @@ func (ast *AST) Validate() error {
 	return nil
 }
 
-// check that all references are defined in this assembly
+// ValidateDefined check that all references are defined in this assembly
 func (ast *AST) ValidateDefined(id string, alreadyChecked map[string]*Shape) error {
 	if _, ok := alreadyChecked[id]; ok {
 		return nil
@@ -420,7 +420,7 @@ func (ast *AST) ShapeNames() []string {
 
 func LoadAST(path string) (*AST, error) {
 	var ast *AST
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("Cannot read smithy AST file: %v\n", err)
 	}
